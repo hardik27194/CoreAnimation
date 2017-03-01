@@ -12,7 +12,6 @@ Velocity = change / time
 * 짧은 거리를 운전하는 자동차를 생각해보면 60mph에서 시작하지 않을것이고 목적지에 도착 시 즉시 0mph로 떨어질 것이다. 한 가지는 무한대로 가속해야 한다는 것이다.
 * 현싲럭으로 천천히 전속력으로 가속화 될 것이고 목적지가 가까워지면 마침내 완만하게 멈출때까지 속도가 느려질 것이다.
 * 다른 예로 표면에 떨어지는 물체는 정지상태로 시작한 다음 표면에 닿을때 까지 계속 가속한다. 현실세계의 모든 물체는 가속하고 감속한다. 그렇다면 애니메이션에서 이러한 종류의 가속을 어떻게 구현할까? 하나의 옵션은 물리 엔진을 사용하여 애니메이션 오브젝트의 마찰과 운동량을 현실적으로 모델링하는 것이지만 대부분의 경우 과잉이다. 애니메이션 사용자 인터페이스의 경우 우리는 레이어를 실제의 실물처럼 움직일 수 있는 몇가지 타이밍 방적식을 원하지만 계산하는것은 너무 복잡하다. 이러한 유형의 방정식에 대한 이름은 기능을 완화하는 것이며, 다행스럽게도 Core Animation에는 여러가지 기본 기능이 내장되어있어 사용할 준비가 되어있다.
-
 ### CAMediaTimingFunction
 * Easing 함수를 사용하려면 CAMediaTimingFunction 클래스의 객체인 CAAnimation의 timingFunction 속성을 설정해야 한다. Implicit Animation의 타이밍 함수를 변경하려면 CATransaction의 `setAnimationTimingFunction` 메서드를 사용할 수도 있다. CAMediaTimingFunction을 만드는 데는 두 가지 방법이 있다. 가장 간단한 옵션은 `timingFunctionWithName` 생성자 메서드를 호출하는 것이다. 이것은 아래 상수 중 하나를 가져올 수 있다.
   * kCAMediaTimingFunctionLinear
