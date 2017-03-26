@@ -206,7 +206,7 @@ extension ViewController {
   * UITrackingRunLoopMode - UIScrollView 및 기타 컨트롤 애니메이션을 적용하는데 사용된다.
 
 * 이 예제에서는 NSDefaultRunLoopMode를 사용했지만 애니메이션이 원활하게 실행되도록 NSRunLoopCommonModes를 대신 사용할 수 있다. 이 모드를 사용할 경우 애니메이션이 높은 프레임 속도로 실행될 때 주의해야한다. 왜냐하면 타이머와 같은 다른 작업 또는 스크롤과 같은 다른 iOS 애니메이션은 애니메이션이 끝날 때 까지 업데이트를 중지하기 때문이다.
-* CADisplayLink는 동시에 여러개 사용이 가능마흐로 NSDefaultRunLoopMode 및 UITrackingRunLoopMode에 추가하여 다른 UIKit 컨트롤 애니메이션의 성능을 방해하지 않으면서 스크롤이 중단되지 않도록 할 수 있다.
+* CADisplayLink는 동시에 여러개 사용이 가능하므로 NSDefaultRunLoopMode 및 UITrackingRunLoopMode에 추가하여 다른 UIKit 컨트롤 애니메이션의 성능을 방해하지 않으면서 스크롤이 중단되지 않도록 할 수 있다.
 ```Swift
 timer = CADisplayLink(target: self, selector: #selector(step))
 timer?.add(to: RunLoop.main, forMode: .defaultRunLoopMode)
