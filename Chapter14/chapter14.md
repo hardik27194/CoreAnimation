@@ -206,7 +206,7 @@ extension ViewController_14_3: UICollectionViewDataSource {
         DispatchQueue.global().async {
             let index = indexPath.row
             let imagePath = self.imagePaths[index]
-            var image = UIImage(contentsOfFile: imagePath)
+            var image = UIImage(named: imagePath)
             
             UIGraphicsBeginImageContextWithOptions(cell.imageView.bounds.size, true, 0)
             image?.draw(in: cell.imageView.bounds)
