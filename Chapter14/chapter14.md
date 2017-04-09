@@ -52,7 +52,404 @@ extension ViewController_14_1: UICollectionViewDataSource {
 
 * 회전식 컨베이어의 이미지는 약 700KB 크기의 800 × 600 픽셀 PNG로 아이폰 5가 1 초의 60 분의 1 이내에 로드 하기에는 너무 크다. 이러한 이미지는 carousel가 스크롤 될 때 즉시 로드되고, 예상대로 스크롤이 버벅인다. Time Profiler 도구 (그림 14.2 참조)는 UIImage + imageWithContentsOfFile : 메소드에서 많은 시간을 소비하고 있음을 보여줍니다. 분명 이미지로드가 병목 현상입니다.
 
-![](14_2.png)
+![](Resource/14_2.png)
 
 * 여기서 성능을 향상시키는 유일한 방법은 이미지로드를 다른 스레드로 옮기는 것이다. 이것은 실제 로딩 시간을 줄이는 데는 도움이되지 않는다(시스템이 로드 된 이미지 데이터를 처리하는 데 CPU 시간을 더 줄이기 때문에 약간 더 나빠질 수도 있다).하지만 이는 메인 스레드가 계속 진행될 수 있음을 의미한다 사용자 입력에 응답하고 스크롤을 움직이는 것과 같은 다른 일을 한다.
 백그라운드 스레드에서 이미지를로드하려면 CGD 또는 NSOperationQueue를 사용하여 자체 스레드 로딩 솔루션을 만들거나 CATiledLayer를 사용할 수 있다. 원격 네트워크에서 이미지를 로드하려면 비동기 NSURLConnection을 사용할 수 있지만 로컬 저장 파일에는 매우 효율적인 옵션이 아니다.
+
+### GCD and NSOperationQueue
+* GCD (Grand Central Dispatch)와 NSOperationQueue는 둘 다 스레드에서 순차적으로 실행되는 블록 대기열을 허용한다는 점에서 비슷하다. NSOperationQueue는 Objective-C 인터페이스 (GCD에서 사용되는 전역 C 함수와 반대)를 가지고 있으며 작업 우선 순위 및 종속성에 대한 세밀한 제어를 제공하지만 조금 더 많은 설정 코드가 필요하다.
+* 아래는 GCD를 사용하여 메인 스레드가 아닌 우선 순위가 낮은 백그라운드 대기열에 이미지를 로드하는 업데이트 된 `-collectionView : cellForItemAtIndexPath :` 메소드를 보여준다. 백그라운드 스레드에서 뷰에 액세스하는 것이 안전하지 않기 때문에 실제로 새로 로드 된 이미지를 셀에 적용하기 전에 메인 스레드로 다시 전환한다.
+* 셀은 UICollectionView에서 재활용되므로 이미지를 로드하는 동안 셀이 다른 인덱스로 재사용되지 않았는지 확인할 수 없습니다. 이미지가 잘못된 셀에 로드되는 것을 방지하기 위해 로드 전에 셀에 인덱스로 태그를 지정하고 이미지를 설정하기 전에 태그가 변경되지 않았는지 확인한다.
+
+```Swift
+class CollectionViewCell_14_2: UICollectionViewCell {
+    @IBOutlet weak var imageView: UIImageView!
+}
+
+class ViewController_14_2: UIViewController {
+    @IBOutlet weak var collectionView: UICollectionView!
+    
+    var imagePaths: [String] = []
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        let images = [
+            "0150",
+            "0154",
+            "0163",
+            "0169",
+            "0170",
+            "0173",
+            "0174",
+            "0180",
+            "0181",
+            "0184",
+            "0197",
+        ]
+        
+        imagePaths = images.map { "IMG_" + $0 + ".png" }
+    }
+}
+
+extension ViewController_14_2: UICollectionViewDataSource {
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        return imagePaths.count
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "CollectionViewCell_14_2", for: indexPath) as? CollectionViewCell_14_2 else {
+            return UICollectionViewCell()
+        }
+        
+        let imageTag = 99
+        
+        cell.imageView.tag = imageTag
+        cell.tag = indexPath.row
+        
+        DispatchQueue.global().async {
+            let index = indexPath.row
+            let imagePath = self.imagePaths[index]
+            let image = UIImage(named: imagePath)
+            
+            DispatchQueue.main.async {
+                if index == cell.tag {
+                    cell.imageView.image = image
+                }
+            }
+        }
+        
+        return cell
+    }
+}
+```
+
+* 이 업데이트 된 버전을 실행하면 원래의 비 스레드 버전보다 성능이 좋지만 여전히 완벽하지는 않다(그림 14.3 참조). `imageWithContentsOfFile :` 메소드가 더 이상 CPU 시간 추적의 상단에 나타나지 않아서 로딩 지연이 수정되었음을 알 수 있다. 문제는 우리 회전식 캐 러셀의 유일한 성능 병목 현상이 이미지 파일의 실제 로딩이라고 가정하고 있었지만 그 경우는 아니다. 이미지 파일 데이터를 메모리에 로드하는 것은 문제의 첫 번째 부분 일뿐이다.
+
+![](Resource/14_3.png)
+
+### Deferred Decompression
+* 이미지 파일이 로드되면 이미지 파일을 압축 해제해야한다. 이 압축 풀기는 계산 상으로 복잡한 작업이 될 수 있으며 상당한 시간이 걸린다. 압축 해제 된 이미지는 원본보다 훨씬 많은 메모리를 사용한다.
+* 로딩과 압축 해제에 소비 된 상대적인 CPU 시간은 이미지 형식에 따라 다르다. PNG 이미지의 경우 파일 크기가 비례 적으로 크기 때문에 JPEG의 경우보다 로드가 오래 걸리지만 압축 해제는 상대적으로 빠르다. 특히 Xcode는 빠른 디코딩을 위한 최적의 설정을 사용하여 프로젝트에 포함 된 PNG를 다시 압축하므로 상대적으로 빠릅니다. JPEG 압축 해제 알고리즘은 PNG에서 사용되는 zip 기반 알고리즘보다 더 복잡하기 때문에 JPEG 이미지는 더 작고 더 빨리 로드되지만 압축 해제 단계는 더 비싸다.
+* 이미지를 로드 할 때, iOS는 보통 메모리를 절약 하기위해 압축 해제를 연기한다. 그리기 시점에서 압축을 풀어야하기 때문에 실제로 이미지를 그릴 때 성능상의 문제가 발생할 수 있다 (가능한 최악의 경우).
+* 지연 압축 해제를 피하는 가장 간단한 방법은 `UIImage + imageNamed :` 메소드를 사용하여 이미지를 로드하는 것이다. `+ imageWithContentsOfFile :` (및 다른 모든 UIImage로드 메소드)와는 달리, 이 메소드는로드 직후 이미지를 압축 해제합니다 (이 장의 뒷부분에서 설명 할 다른 이점도 있음). 문제는 `+ imageNamed :` 애플리케이션 리소스 번들 내에서 로드 된 이미지에만 적용되므로 사용자가 생성 한 콘텐츠 나 다운로드 한 이미지에는 사용할 수 없다.
+* 이미지를 즉시 압축 해제하는 또 다른 방법은 레이어의 내용으로 지정하거나 UIImageView의 이미지 속성으로 지정하는 것입니다. 불행히도 이 작업은 메인 스레드에서 수행되어야 하므로 일반적으로 성능 문제에 도움이되지 않는다.
+* 세 번째 방법은 다음과 같이 UIKit을 우회하여 대신 ImageIO 프레임 워크를 사용하여 이미지를 로드하는 것이다.
+
+```Objective-C
+NSInteger index = indexPath.row;
+NSURL *imageURL = [NSURL fileURLWithPath:self.imagePaths[index]]; NSDictionary *options = @{(__bridge id)kCGImageSourceShouldCache: @YES}; CGImageSourceRef source = CGImageSourceCreateWithURL(
+(__bridge CFURLRef)imageURL, NULL);
+CGImageRef imageRef = CGImageSourceCreateImageAtIndex(source, 0,
+(__bridge CFDictionaryRef)options);
+UIImage *image = [UIImage imageWithCGImage:imageRef]; CGImageRelease(imageRef);
+CFRelease(source);
+```
+
+* 이렇게하면 이미지를 만들 때 `kCGImageSourceShouldCache` 옵션을 사용하여 이미지를 즉시 압축 해제하고 이미지의 수명 동안 압축 해제 된 버전을 유지할 수 있다.
+* 마지막 옵션은 정상적으로 UIKit을 사용하여 이미지를 로드하지만 즉시 CGContext에 그린다. 이미지는 그려지기 전에 압축 해제되어야하므로 압축 해제가 즉시 이루어진다. 이 작업을 수행하는 이점은 UI 자체를 차단할 필요가 없도록 드로잉을 백그라운드 스레드(예 :로드 자체)에서 수행 할 수 있다는 점이다.
+* 압축해제를 강제하기 위하여 이미지를 미리 그릴 때 취할 수 있는 두 가지 접근 방법이 있다.
+  * 이미지의 단일 픽셀을 단일 픽셀 크기의 CGContext로 그린다. 이것은 여전히 ​​전체 이미지의 압축을 풀지만 드로잉 자체는 본질적으로 시간이 필요하지 않다. 단점은 로드 된 이미지가 특정 장치에서 그리기 위해 최적화되지 않을 수 있으며 결과적으로 앞으로 그리는 데 더 오래 걸릴 수 있다는 점이다. 또한 iOS가 메모리를 절약하기 위해 압축 해제 된 이미지를 다시 삭제할 수도 있다.
+  * 전체 이미지를 CGContext에 그려서 원래 이미지를 버리고 컨텍스트 내용에서 생성 된 새 이미지로 바꾼다. 이것은 하나의 픽셀을 그리는 것보다 계산 상으로 많은 비용이 들지만 결과 이미지는 특정 iOS 장치에서 그리기에 최적화되며 원본 압축 이미지는 삭제되었으므로 iOS가 갑자기 압축 해제 된 버전을 다시 버리도록 결정할 수 없다. 메모리를 절약해라.
+* 애플이 이러한 종류의 트릭을 사용하여 표준 이미지 압축 해제 로직을 우회하는 것을 권장하지는 않는다는 점은 주목할 가치가 있다.(이유는 기본 동작을 선택했다.) 큰 이미지를 많이 사용하는 어플리케이션을 개발한다면, 훌륭한 성능을 원하면 시스템을 게임해야 할 때가 있다.
++ `imageNamed :`를 사용하는 것이 옵션이 아니라고 가정하면, 전체 이미지를 CGContext로 드로잉하는 것이 가장 효과적 인 것처럼 보인다. 추가 드로잉 단계를 사용하면 다른 압축 해제 기술과 비교하여 불량하게 수행 할 수 있다고 생각할 수도 있지만, 새로 생성 된 이미지 (생성 된 특정 장치에 맞게 최적화 됨)는 이후의 모든 사용 시마다 더 빠르게 그려진다 당신은 원본을 유지한다. 또한 이미지를 실제 크기보다 작게 표시하려는 경우 올바른 크기로 다시 그려서 배경 스레드에 표시하면 표시 될 때마다 크기 조정을 다시 적용하는 것보다 더 나은 성능을 발휘한다( 이 예제에서는로드 된 이미지의 크기가 정확하기 때문에 여기서는 특별한 이점이 적용되지 않는다).
+
+* `-collectionView : cellForItemAtIndexPath :` 메소드를 수정하여 디스플레이하기 전에 이미지를 다시 그리면 (스크롤링 14.3 참고) 이제 스크롤이 완벽하게 원활하다.
+
+```Swift
+class CollectionViewCell_14_3: UICollectionViewCell {
+    @IBOutlet weak var imageView: UIImageView!
+}
+
+class ViewController_14_3: UIViewController {
+    @IBOutlet weak var collectionView: UICollectionView!
+    
+    var imagePaths: [String] = []
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        let images = [
+            "0150",
+            "0154",
+            "0163",
+            "0169",
+            "0170",
+            "0173",
+            "0174",
+            "0180",
+            "0181",
+            "0184",
+            "0197",
+            ]
+        
+        imagePaths = images.map { "IMG_" + $0 + ".png" }
+    }
+}
+
+extension ViewController_14_3: UICollectionViewDataSource {
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        return imagePaths.count
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "CollectionViewCell_14_3", for: indexPath) as? CollectionViewCell_14_3 else {
+            return UICollectionViewCell()
+        }
+        
+        let imageTag = 99
+        
+        cell.imageView.tag = imageTag
+        cell.tag = indexPath.row
+        
+        DispatchQueue.global().async {
+            let index = indexPath.row
+            let imagePath = self.imagePaths[index]
+            var image = UIImage(contentsOfFile: imagePath)
+            
+            UIGraphicsBeginImageContextWithOptions(cell.imageView.bounds.size, true, 0)
+            image?.draw(in: cell.imageView.bounds)
+            image = UIGraphicsGetImageFromCurrentImageContext()
+            UIGraphicsEndImageContext()
+            
+            DispatchQueue.main.async {
+                if index == cell.tag {
+                    cell.imageView.image = image
+                }
+            }
+        }
+        
+        return cell
+    }
+}
+```
+
+### CATiledLayer
+* 6 장, "특수 레이어"에서 설명한 것처럼 CATiledLayer는 사용자 상호 작용을 차단하지 않고 매우 큰 이미지를 비동기식으로로드하고 표시하는 데 사용할 수 있다. 그러나 CATiledLayer를 사용하여 UICollectionView의 모든 셀에 대해 별도의 CATiledLayer 인스턴스를 만들어 각 캐 러셀 이미지를로드 할 수 있다.
+* 이런 식으로 CATiledLayer를 사용할 때 몇 가지 단점이 있습니다.
+  * 큐잉과 캐싱을위한 CATiledLayer 알고리즘은 노출되어 있지 않으므로 우리의 목적에 맞게 조정되어 있기를 바란다.
+  * CATiledLayer는 이미 우리 타일과 크기가 같고 이미 압축이 풀린 (다시 그려서 레이어 내용으로 직접 사용할 수 있음) 경우에도 우리 이미지를 CGContext로 다시 그려야한다.
+* Listing 14.4는 CATiledLayer를 사용하는 이미지 회전식 메뉴의 재 구현을 보여준다.
+
+```Swift
+class CollectionViewCell_14_4: UICollectionViewCell {
+    @IBOutlet weak var imageView: UIImageView!
+}
+
+class ViewController_14_4: UIViewController {
+    @IBOutlet weak var collectionView: UICollectionView!
+    
+    var imagePaths: [String] = []
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        let images = [
+            "0150",
+            "0154",
+            "0163",
+            "0169",
+            "0170",
+            "0173",
+            "0174",
+            "0180",
+            "0181",
+            "0184",
+            "0197",
+            ]
+        
+        imagePaths = images.map { "IMG_" + $0 + ".png" }
+    }
+}
+
+extension ViewController_14_4: UICollectionViewDataSource {
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        return imagePaths.count
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "CollectionViewCell_14_4", for: indexPath) as? CollectionViewCell_14_4 else {
+            return UICollectionViewCell()
+        }
+        var tileLayer = cell.contentView.layer.sublayers?.last
+        if tileLayer == nil {
+            tileLayer = CATiledLayer()
+            tileLayer?.frame = cell.bounds
+            tileLayer?.contentsScale = UIScreen.main.scale
+            tileLayer?.setValue(indexPath.row, forKey: "index")
+            tileLayer?.delegate = self
+            cell.contentView.layer.addSublayer(tileLayer ?? CATiledLayer())
+        }
+        
+        tileLayer?.contents = nil
+        tileLayer?.setValue(indexPath.row, forKey: "index")
+        tileLayer?.setNeedsDisplay()
+        
+        return cell
+    }
+}
+
+extension ViewController_14_4: CALayerDelegate {
+    func draw(_ layer: CALayer, in ctx: CGContext) {
+        let index = layer.value(forKey: "index") as? Int ?? 0
+        let imagePath = imagePaths[index]
+        let tileImage = UIImage(named: imagePath) ?? UIImage()
+        
+        let aspectRatio = tileImage.size.height / tileImage.size.width
+        var imageRect = CGRect.zero
+        
+        imageRect.size.width = layer.bounds.size.width
+        imageRect.size.height = layer.bounds.size.height * aspectRatio
+        imageRect.origin.y = (layer.bounds.size.height - imageRect.size.height) / 2
+        
+        UIGraphicsPushContext(ctx)
+        tileImage.draw(in: imageRect)
+        UIGraphicsPopContext()
+    }
+}
+```
+
+* 여기서 설명할 가치가 있는 몇 가지 트릭을 사용했다.
+  * 픽셀, 노트 포인트, 픽셀에서 타일 렌더링 레이어의 타일 크기는 타일이 셀 크기와 정확히 일치하는지 확인하기 위해 화면 크기로 크기를 곱한다.
+  * `Inthe-drawLayer : inContext :` 메서드는 올바른 이미지를 로드 할 수 있도록 전달자와 관계가 있다. 우리는 KALC의 기능을 이용하여 KVC를 사용하여 임의의 값을 저장 및 검색하고 각 레이어에 올바른 이미지 인덱스를 태그 할 수 있다.
+* 우리의 우려에도 불구하고 CATiledLayer는이 경우 매우 잘 작동한다. 성능 문제는 사라지고 필요한 코드의 양은 GCD 접근법과 유사하다. 유일한 사소한 문제는로드 후 각 이미지가 화면에 나타나는 것처럼 눈에 띄는 페이드 인이 있다는 것이다 (그림 14.4 참조).
+
+![](Resource/14_4.png)
+
+* CATiledLayer fadeDuration 속성을 사용하여 페이드 인 속도를 조정하거나 페이드를 모두 제거 할 수 있지만 실제 문제는 해결되지 않는다. 이미지로드가 시작될 때와 준비가 완료 될 때 사이에 항상 지연이 있다 그릴 것이다, 그리고 그 것이다
+* 스크롤 할 때 새로운 이미지가 팝업된다. 이 문제는 CATiledLayer에만 국한되지 않는다. 또한 GCD 기반 버전에도 영향을 미친다.
+* 앞서 설명한 모든 이미지로드 및 캐싱 기술을 사용하더라도 이미지가 너무 커서 실시간으로 로드하고 표시 할 수없는 경우가 있다. 13 장에서 언급했듯이 iPad의 전체 화면 망막 이미지는 2048 × 1536의 해상도를 가지며 12MB의 RAM (압축되지 않은 이미지)을 소비합니다. 3 세대 iPad의 하드웨어는 1/60 초 이내에 그러한 이미지를 로드, 압축 해제 및 표시 할 수 없다. 애니메이션 스터 터를 피하기 위해 백그라운드 스레드로 로드하더라도 회전식 캐 러셀에서 여전히 간격이 표시된다.
+* 실제 이미지가 로드되는 동안 그 사이에 플레이스홀더 이미지를 표시 할 수 있지만 이것은 문제를 덮으려는 것 뿐이다. 우리는 그것보다 더 잘할 수 있다.
+
+### Resolution Swapping
+* 레티 나 해상도 (Apple의 마케팅에 따르면)는 사람의 눈이 정상적인 시력 거리에서 구별 할 수있는 가장 작은 픽셀 크기를 나타낸다. 그러나 정적 픽셀에만 적용된다. 당신이 움직이는 이미지를 볼 때, 당신의 눈은 디테일에 덜 민감하고, 더 낮은 해상도의 이미지는 망막의 품질과 구별이되지 않는다.
+* 매우 큰 동영상 이미지를 빠르게 로드하고 표시해야하는 경우 간단한 해결책은 캐러 셀이 움직이는 동안 속임수를 쓰고 더 작은 (또는 낮은 해상도의) 이미지를 표시 한 다음 정지 시점에 full-res 이미지를 스왑하는 것이다. 다시 말하면 우리는 각각의 이미지를 각각 다른 해상도로 저장할 필요가 있다는 것을 의미한다. 그러나 다행스럽게도 그것은 우리가 여전히 망막과 비 망막을 모두 지원해야하기 때문에 일반적인 관행이다.
+* 원격 소스 또는 사용자의 사진 보관함에서 이미지를 로드하고 쉽게 사용할 수 있는 저해상도 버전이 없는 경우 큰 이미지를 더 작은 CGContext로 그려 결과를 동적으로 생성할 수 있고 이는 나중에 사용하기 위해 어딘가에 저장할 수 있다.
+* 이미지 스왑을 예약하려면 UIScrollView (UITableView 및 UICollectionView와 같은 다른 scrollview 기반 컨트롤)의 UIScrollViewDelegate 프로토콜의 일부로 호출되는 몇 가지 대리자 메서드를 활용할 수 있다.
+
+```Swift
+func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool)
+func scrollViewDidEndDecelerating(_ scrollView: UIScrollView)
+```
+
+* 이 방법을 사용하여 회전식 캐 러셀이 정지 한 때를 감지하고 그 시점까지 이미지의 고해상도 버전로드를 연기 할 수 있다. 이미지의 저해상도 및 고해상도 버전이 색상 균형 측면에서 완벽하게 일치하는 한 전환은 거의 눈에 띄지 않는다. 동일한 그래픽 응용 프로그램이나 스크립트를 사용하여 동일한 컴퓨터에서 생성해야한다.
+
+## Caching
+* 표시 할 이미지 수가 많으면 미리로드하는 것이 실용적이지는 않지만 로드하는 데 문제가 있으면 곧 버려야한다. 그들은 화면 밖으로 움직인다. 로드 후 이미지를 선택적으로 캐싱하면 사용자가 이미 본 이미지에서 앞뒤로 스크롤 할 때 팝업을 반복하지 않아도된다.
+* 캐싱은 원칙적으로 간단하다. 값 비싼 계산 (또는 플래시 드라이브 또는 네트워크에서로드 한 파일)의 결과를 메모리에 저장하기 때문에 필요할 때 다시 액세스 할 수 있다. 문제는 캐싱이 본질적으로 절충안이라는 것이다. 메모리를 사용하는 대가로 성능을 얻지 만 메모리가 제한된 리소스이기 때문에 모든 것을 무한정 캐시 할 수는 없다.
+* 언제 그리고 무엇을 캐시 할 것인가 (그리고 얼마나 오래 걸릴지)를 결정하는 것은 항상 쉽지는 않다. 다행히도 대부분의 경우 iOS가 이미지 캐싱을 처리한다.(오호..)
+
+### The +imageNamed: Method
+* 이전에 `[UIImage imageNamed :]`를 사용하여 이미지를 로드하면 이미지가 그려 질 때까지 지연되지 않고 즉시 이미지의 압축을 풀 수 있다는 이점이 있다. 하지만 ` imageNamed :` 메소드는 또 다른 중요한 이점을 가지고 있다. 자동으로 압축 해제 된 이미지를 캐시에 저장하여 나중에 다시 사용할 수 있다(소름..). 직접 참조를 유지하지 않아도된다.
+* 일반적인 iOS 앱 (예 : 아이콘, 버튼 및 배경 이미지)에서 사용할 대부분의 이미지의 경우 `+ imageNamed :` 메소드를 사용하여 이미지를 로드하는 것이 가장 간단하고 효과적인 방법이다. nib 파일에 포함 된 이미지는 동일한 메커니즘을 사용하여 로드되므로 실제로 구현하지 않고도 암묵적으로 사용하게된다.
+* 하지만 `+ imageNamed :` 메서드는 마법의 총알이 아니다. 사용자 인터페이스 가구에 최적화되어 있으며 응용 프로그램에서 표시해야하는 모든 유형의 이미지에 적합하지 않다. 이미지 캐싱 메커니즘을 구현하는 것이 좋은 이유는 다음과 같다.
+  * `+ imageNamed :` 메소드는 응용 프로그램 번들 자원 디렉토리에서 가장 가까운 것으로 추측한다. 실제로 많은 양의 큰 이미지를 표시하는 대부분의 앱은 인터넷이나 사용자의 카메라 롤에서 로드해야하므로 `+ imageNamed :`는 작동하지 않는다.
+  * `+ imageNamed :` 캐시는 모든 응용 프로그램 인터페이스 이미지 (버튼, 배경 등)를 저장하는 데 사용된다. 사진과 같이 큰 이미지로 캐시를 채우면 iOS가 해당 인터페이스 이미지를 제거하여 공간을 확보 할 확률이 높아져 앱을 탐색 할 때 성능이 저하 될 수 있으므로 그 이미지를 다시 로드해야한다. 캐 러셀 이미지에 별도의 캐시를 사용하면 나머지 앱 이미지와 수명을 분리 할 수 ​​있다.
+  * `+ imageNamed :` 캐싱 메커니즘이 공개되지 않고 매우 작은 컨트롤이다. 예를 들어, 이미지를 로드하기 전에 이미 캐시되었는지 여부를 테스트 할 수 없으며 캐시 크기를 제어 할 수 없으며 더 이상 필요없는 캐시에서 객체를 제거 할 수 없다.
+
+### Custom Caching
+* 별개의 캐싱 시스템을 만드는 것은 중요하지 않다. 필 칼튼 (Phil Karlton)은 "컴퓨터 무결성과 이름 짓기라는 두 가지 어려운 문제가 컴퓨터 과학에만 있다."라고 했다.
+* 이미지 캐시를 직접 작성한다면 어떻게 해야할까요? 관련된 과제를 살펴 보자.
+  * Choosing a suitable cache key - 캐시 키는 캐시에서 이미지를 고유하게 식별하는 데 사용된다. 런타임에 이미지를 만드는 경우 캐시 된 이미지를 다른 이미지와 구별하는 문자열을 생성하는 방법이 항상 명확하지는 않다. 이미지 회전식 캐 러셀의 경우 이미지 파일 이름이나 셀 인덱스를 사용할 수 있기 때문에 매우 간단하다.
+  * Speculative caching - 데이터를 생성하거나 로드하는 노력이 많으면 처음으로 필요하기 전에 데이터를 로드하고 캐시 할 수 있다. Speculative preloading logic은 본질적으로 어플리케이션에 따라 다르지만, 회전식 캐 루셀의 경우 특정 위치 및 스크롤 방향에 대해 다음 이미지가 정확히 결정될 수 있기 때문에 비교적 간단하게 구현할 수 있다.
+  * Cache invalidation - 이미지 파일이 변경되면 캐시 된 버전을 업데이트 해야한다는 것을 어떻게 알 수 있습니까? 이것은 Phil Karlton이 말했듯이 매우 어려운 문제이지만, 다행스럽게도 어플리케이션 리소스에서 정적 이미지를로드 할 때 걱정할 필요가 없다. 사용자가 제공 한 이미지 (예기치 않게 수정되거나 덮어 쓰기 될 수 있음)의 경우 이미지를 캐시 할 때의 타임 스탬프를 저장하고 파일의 수정 된 날짜와 비교하는 것이 좋다.
+  * Cache reclamation - 캐시 공간 (메모리)이 부족할 때 먼저 버릴 내용을 어떻게 결정합니까? 캐시 된 항목의 재사용 가능성을 결정하기 위해 추측 알고리즘을 작성해야 할 수도 있다. 고맙게도, 캐시 교정 문제에 대해 Apple은 NSCache라는 편리한 범용 솔루션을 제공한다.
+
+### NSCache
+* NSCache는 NSDictionary와 매우 유사하게 동작한다. `-setObject : forKey :` 및 `-object : forKey :` 메소드를 이용해 키를 사용하여 캐시에서 오브젝트를 삽입하고 검색 할 수 있다. 차이점은 딕셔너리와 달리 NSCache는 시스템의 메모리가 부족할 때 저장된 객체를 자동으로 삭제한다는 점이다.
+* NSCache가 객체 폐기시기를 결정하는 데 사용하는 알고리즘은 문서화되어 있지 않지만, 총 캐시 크기를 설정하는 `-setCountLimit :` 메소드와 저장된 각 객체에 대한 구체적인 "비용"을 지정하는 `forKey : cost :`를 사용하여 동작 방법에 대한 힌트를 제공 할 수 있다.
+* 비용은 개체를 다시 만드는 상대적인 노력을 나타 내기 위해 개체에 지정할 수있는 숫자 값이다. 큰 이미지에 많은 비용을 할당하면 캐시는 저장하기에 더 비싼 객체이며 "값 비싼"객체를 버리면 "값싼"객체보다 성능에 큰 영향을 줄 수 있음을 알게된다. `-setTotalCostLimit :`를 사용하여 항목 수 대신 총 캐시 크기를 지정할 수 있다.
+* NSCache는 범용 캐싱 솔루션이며, 필요하다면 특정 캐로 셀에 더 잘 최적화 된 맞춤 캐싱 클래스를 만들 수 있다. (예를 들어 캐시 된 이미지 인덱스와 현재 가운데 인덱스의 차이를 기반으로 먼저 어느 이미지를 놓을 지 결정할 수 있다.)하지만 NSCache는 현재 캐싱 요구 사항에 충분해야한다. 우리는 조숙한 최적화에 빠지기를 원하지 않는다.
+* 캐 러셀 예제를 이미지 캐시와 기본적인 투기 적 사전로드 구현으로 확장하고 새로운 이미지에 대한 팝인 효과를 향상시키는 지 살펴 봅시다.
+
+```Swift
+class CollectionViewCell_14_5: UICollectionViewCell {
+    @IBOutlet weak var imageView: UIImageView!
+}
+
+class ViewController_14_5: UIViewController {
+    @IBOutlet weak var collectionView: UICollectionView!
+    
+    var imagePaths: [String] = []
+    var cache = NSCache<AnyObject, UIImage>()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        let images = [
+            "0150",
+            "0154",
+            "0163",
+            "0169",
+            "0170",
+            "0173",
+            "0174",
+            "0180",
+            "0181",
+            "0184",
+            "0197",
+            ]
+        
+        imagePaths = images.map { "IMG_" + $0 + ".png" }
+    }
+}
+
+extension ViewController_14_5 {
+    @discardableResult
+    func loadImageAtIndex(index: Int) -> UIImage? {
+        if let image = cache.object(forKey: index as AnyObject) {
+            return image
+        }
+        
+        cache.removeObject(forKey: index as AnyObject)
+        
+        DispatchQueue.global().async {
+            let imagePath = self.imagePaths[index]
+            var image = UIImage(named: imagePath) ?? UIImage()
+            
+            UIGraphicsBeginImageContextWithOptions(image.size, true, 0)
+            image.draw(at: CGPoint.zero)
+            image = UIGraphicsGetImageFromCurrentImageContext()!
+            UIGraphicsEndImageContext()
+            
+            DispatchQueue.main.async {
+                self.cache.setObject(image, forKey: index as AnyObject)
+                let indexPath = IndexPath(item: index, section: 0)
+                if let cell = self.collectionView.cellForItem(at: indexPath) as? CollectionViewCell_14_5 {
+                    cell.imageView.image = image
+                }
+            }
+        }
+        
+        return nil
+    }
+}
+
+extension ViewController_14_5: UICollectionViewDataSource {
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        return imagePaths.count
+    }
+    
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "CollectionViewCell_14_5", for: indexPath) as? CollectionViewCell_14_5 else {
+            return UICollectionViewCell()
+        }
+        
+        cell.imageView.image = loadImageAtIndex(index: indexPath.item)
+        if indexPath.item < imagePaths.count - 1 {
+            loadImageAtIndex(index: indexPath.item + 1)
+        }
+        
+        if indexPath.item > 0 {
+            loadImageAtIndex(index: indexPath.item - 1)
+        }
+        
+        return cell
+    }
+}
+```
+
+* 훨씬 낫다! 매우 빠르게 스크롤하는 경우에는 여전히 팝업이 있지만 정상 스크롤의 경우에는 매우 드문 경우이며, 캐싱은 어쨌든 로드가 적다는 것을 의미한다. 우리의 프리 로딩 로직은 현재 매우 미숙 한 상태이며, 회전 속도의 방향과 회전 속도를 고려하여 향상 될 수 있지만 캐시되지 않은 버전보다 훨씬 더 낫다.
+
+## File Format
