@@ -453,3 +453,111 @@ extension ViewController_14_5: UICollectionViewDataSource {
 * 훨씬 낫다! 매우 빠르게 스크롤하는 경우에는 여전히 팝업이 있지만 정상 스크롤의 경우에는 매우 드문 경우이며, 캐싱은 어쨌든 로드가 적다는 것을 의미한다. 우리의 프리 로딩 로직은 현재 매우 미숙 한 상태이며, 회전 속도의 방향과 회전 속도를 고려하여 향상 될 수 있지만 캐시되지 않은 버전보다 훨씬 더 낫다.
 
 ## File Format
+* 이미지로드 성능은 더 큰 이미지 파일 형식을 로드하는 데 걸리는 시간과 더 작은 이미지 파일 형식을 압축 해제하는 데 걸린 시간 사이의 균형에 결정적으로 달려 있다. Apple의 많은 설명서에는 PNG가 iOS의 모든 이미지에 선호되는 형식이지만 여전히 오래된 정보이며 오도 된 내용이다.
+* PNG 이미지가 사용하는 무손실 압축 알고리즘은 JPEG 이미지에 사용되는 더 복잡한 손실 알고리즘보다 약간 빠른 압축 해제를 허용하지만, 이 차이는 일반적으로 (비교적 느린) 플래시 저장 액세스 지연으로 인해 로드 시간의 차이에 비하면 정말 왜소하다.
+* 아래는 이미지를 다양한 크기로 로드하고 소요 시간을 표시하는 간단한 벤치마킹 앱의 코드이다. 공정한 테스트를 위해 각 이미지의 결합 된로드 및 드로잉 시간을 측정하여 결과 이미지의 압축 해제 성능도 고려해야한다. 보다 정확한 판독을 위해 평균 로딩 시간을 가질 수 있도록 각 이미지를 최소 1 초 이상 반복적으로 로드하고 그린다.
+
+```Swift
+class TableViewCell_14_6: UITableViewCell {
+    @IBOutlet weak var sizeLabel: UILabel!
+    @IBOutlet weak var timeLabel: UILabel!
+}
+
+class ViewController_14_6: UIViewController {
+    @IBOutlet weak var tableView: UITableView!
+
+    let imageFolder = "Coast Photos"
+    
+    let items = [
+        "2048x1536",
+        "1024x768",
+        "512x384",
+        "256x192",
+        "128x96",
+        "64x48",
+        "32x24",
+    ]
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        tableView.dataSource = self
+    }
+}
+
+extension ViewController_14_6 {
+    func loadImageForOneSec(path: String) -> CFTimeInterval {
+        UIGraphicsBeginImageContext(CGSize(width: 1, height: 1))
+        
+        var imagesLoaded = 0
+        var endTime: CFTimeInterval = 0
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        while endTime - startTime < 1 {
+            let image = UIImage(contentsOfFile: path)
+            
+            image?.draw(at: CGPoint.zero)
+            
+            imagesLoaded += 1
+            endTime = CFAbsoluteTimeGetCurrent()
+        }
+        
+        UIGraphicsEndImageContext()
+        
+        return (endTime - startTime) / CFTimeInterval(imagesLoaded)
+    }
+    
+    func loadImageAtIndex(index: Int) {
+        DispatchQueue.global().async {
+            let fileName = self.items[index]
+            let pngPath = Bundle.main.path(forResource: fileName, ofType: "png", inDirectory: self.imageFolder) ?? ""
+            let jpgPath = Bundle.main.path(forResource: fileName, ofType: "jpg", inDirectory: self.imageFolder) ?? ""
+            
+            let pngTime = self.loadImageForOneSec(path: pngPath) * 1000
+            let jpgTime = self.loadImageForOneSec(path: jpgPath) * 1000
+            
+            DispatchQueue.main.async {
+                let indexPath = IndexPath(row: index, section: 0)
+                if let cell = self.tableView.cellForRow(at: indexPath) as? TableViewCell_14_6 {
+                    cell.timeLabel.text = String(format: "PNG: %03ims, JPG: %03ims", pngTime, jpgTime)
+                }
+            }
+        }
+    }
+}
+
+extension ViewController_14_6: UITableViewDataSource {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return items.count
+    }
+    
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(withIdentifier: "TableViewCell_14_6", for: indexPath) as? TableViewCell_14_6 else {
+            return UITableViewCell()
+        }
+        
+        cell.sizeLabel.text = "\(items[indexPath.row])"
+        cell.timeLabel.text = "Loading..."
+        
+        loadImageAtIndex(index: indexPath.row)
+        
+        return cell
+    }
+}
+```
+
+* PNG 및 JPEG 압축 알고리즘은 다양한 이미지 유형에 맞춰 조정된다. JPEG는 사진과 같이 노이즈가 많은 부정확 한 이미지에 적합하다. PNG는 색상, 선 또는 정확한 그라디언트의 플랫 영역에 더 적합하다. 좀 더 공정한 벤치마킹을하기 위해 사진과 무지개 색 그라디언트의 두 가지 이미지로 실행한다. 각 이미지의 JPEG 버전은 기본 Photoshop "고품질"설정 인 60 %를 사용하여 인코딩되었다. 
+* 그림 14.5는 결과를 보여준다.
+![](Resource/14_5.png)
+
+* 벤치 마크에서 보여 주듯이 PNG가 아닌 이미지의 경우 이미지가 매우 작지 않은 한 JPEG는 동일한 크기의 PNG보다 로드하는 것이 빠르다. PNG에 친숙한 이미지의 경우 중간에서 큰 이미지의 경우보다 여전히 더 좋습니다.
+* 이 점에서 JPEG는 이미지 회전식 앱의 더 나은 선택이었다. PNG 대신 JPEG를 사용했다면 스레드 로딩 및 캐싱 트릭 중 일부가 전혀 필요하지 않았을 수 있다.
+* 불행히도 JPEG 이미지를 항상 사용할 수있는 것은 아니다. 이미지에 투명도가 필요하거나 JPEG 알고리즘을 사용하여 제대로 압축되지 않는 미세한 세부 사항이있는 경우 다른 형식을 사용할 수 밖에 없다. Apple은 iOS 용 PNG 및 JPEG로드 코드 경로를 특별히 최적화 했으므로 일반적으로 선호되는 형식이다. 즉, 특정 상황에서 유용 할 수있는 다른 옵션이 있다.
+
+### Hybrid Images
+* 알파 투명도가 포함 된 이미지의 경우 PNG를 사용하여 알파 채널을 압축하고 JPEG를 사용하여 이미지의 RGB 부분을 압축 한 다음로드 한 후 결합하여 두 가지 장점을 모두 활용할 수 있다. 이는 각 형식의 강점을 발휘하여 PNG 품질에 근접하고 JPEG 파일 크기와 로딩 성능이 근접한 이미지를 생성한다.
+* 아래는 별도의 색상 및 마스크 이미지를 로드 한 다음 런타임에 결합하는 코드를 보여준다.
+
+```Swift
+
+```
