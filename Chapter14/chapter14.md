@@ -559,5 +559,178 @@ extension ViewController_14_6: UITableViewDataSource {
 * 아래는 별도의 색상 및 마스크 이미지를 로드 한 다음 런타임에 결합하는 코드를 보여준다.
 
 ```Swift
+class ViewController_14_7: UIViewController {
+    @IBOutlet weak var imageView: UIImageView!
 
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        let image = UIImage(named: "Snowman")
+        let mask = UIImage(named: "SnowmanMask")
+        
+        let graySpace = CGColorSpaceCreateDeviceGray()
+        let maskRef = mask?.cgImage?.copy(colorSpace: graySpace)
+        
+        //combine images
+        let resultRef = image?.cgImage?.masking(maskRef!)
+        let result = UIImage(cgImage: resultRef!)
+        
+        imageView.image = result
+    }
+}
 ```
+
+* 이 방법으로 각 이미지에 대해 두 개의 개별 파일을 사용하는 것은 약간 번거로울 수 있다. JPNG 라이브러리 (https://github.com/nicklockwood/JPNG)는이 기술을 재사용 할 수있는 오픈 소스를 제공한다.이 기술을 사용하면 두 이미지를 단일 파일로 압축하고 + imageNamed: 및 + imageWithContentsOfFile : 메소드를 사용하여 하이브리드 이미지를 직접로드 할 수 있다.
+
+### JPEG 2000
+* iOS는 TIFF 및 GIF와 같은 JPEG 및 PNG 이외에도 다양한 이미지 형식을 지원하지만 대부분 JPEG 또는 PNG보다 압축, 품질 및 성능이 더 좋지 않으므로 신경 쓰지 않아도된다.
+* 그러나 iOS 5에서 Apple은 JPEG 2000 이미지 형식에 대한 지원을 추가했다. 이것은 작은 팡파르와 함께 추가되었으며 잘 알려지지 않았다. Xcode-JPEG 2000 이미지가 Interface Builder에 나타나지 않아도 제대로 지원되지 않는다.
+* JPEG 2000 이미지는 런타임시 (장치 및 시뮬레이터 모두에서) 작동하지만 주어진 파일 크기에 대해 JPEG보다 우수한 이미지 품질을 제공 할뿐 아니라 알파 투명도를 완벽하게 지원한다. 그러나 JPEG 2000 이미지는 PNG 또는 JPEG보다 로드 및 표시 속도가 크게 떨어 지므로 파일 크기를 줄이는 것이 런타임 성능보다 우선 순위가 높을 경우에만 실제로는 좋은 옵션이다.
+* 미래의 iOS 버전에서 크게 향상 될 경우를 대비하여 JPEG 2000을 지켜 볼 가치가 있지만, 지금은 하이브리드 이미지가 비슷한 파일 크기 및 품질에 대해 더 나은 성능을 제공한다.
+
+### PVRTC
+* 현재 시중에 나와있는 모든 iOS 장치는 GPU로 Imagination Technologies의 PowerVR 그래픽 칩을 사용한다. PowerVR 칩은 PVRTC (PowerVR Texture Compression)라는 독점적 이미지 압축 표준을 지원한다. 
+* iOS에서 사용할 수있는 대부분의 이미지 포맷과 달리 PVRTC 이미지는 미리 압축 해제 할 필요없이 직접 화면에 그릴 수 있다. 즉,로드 후 압축 해제 단계가 없으며 메모리의 크기가 다른 이미지 유형보다 현저히 적다 (사용되는 압축 설정에 따라 크기의 1/16 정도).
+* 그러나 PVRTC에는 몇 가지 단점이 있다.
+  * 로드 할 때 RAM 사용량은 적지 만 PVRTC 파일은 JPEG보다 크기 때문에 압축 알고리즘이 파일 크기가 아닌 성능에 맞게 최적화되어 있으므로 내용에 따라 PNG보다 클 수 있다.
+  * PVRTC 이미지는 정확히 정사각형이어야하며 power-of-two dimensions를 가져야한다. 소스 이미지가 이러한 요구 사항을 충족시키지 못하면 PVRTC로 변환하기 전에 원본 이미지가 늘리거나 빈 공간을 채워야한다.
+  * 특히 투명성이있는 이미지의 경우 품질이 환상적이지 않다. 일반적으로 크게 압축 된 JPEG 파일처럼 보인다.
+  * PVRTC 이미지는 코어 그래픽을 사용하여 그릴 수 없으며 일반적인 UIImageView에 표시되거나 레이어 내용으로 직접 사용될 수 없다. OpenGL 텍스처로 PVRTC 이미지를 로드 한 다음 CAEAGLLayer 또는 GLKView에 표시하기 위해 한 쌍의 삼각형에 매핑해야한다.
+  * PVRTC 이미지를 그리기위한 OpenGL 컨텍스트를 생성하는 것은 초기에는 상당히 비싸다. 동일한 컨텍스트에 많은 이미지를 그릴 계획이 아니라면 PVRTC 사용의 성능 이점을 상쇄 할 수 있다.
+  * PVRTC 이미지는 비대칭 압축 알고리즘을 사용한다. 그들은 거의 즉시 압축을 풀지만 압축하는 데는 오랜 시간이 걸린다. 현대적이고 빠른 데스크탑 Mac에서는 하나의 큰 PVRTC 이미지를 생성하는 데 1 분 이상 걸릴 수 있다. 따라서 iOS 장치에서 즉시 생성 할 수 없다.
+
+* OpenGL을 사용하는데 신경 쓰지 않고 미리 이미지를 생성 할 수 있다면 PVRTC는 iOS에서 사용할 수있는 다른 형식과 비교하여 놀라운 로딩 성능을 제공한다. 예를 들어, 현대적인 iOS 기기 (Retina iPad 화면을 채울 정도로 충분히 큼)에서 1 초도 안되는 시간에 2048 × 2048 개의 PVRTC 이미지를 메인 스레드에 로드하고 표시 할 수 있다. 다른 형식을로드 할 때 필요한 스레딩 및 캐싱의 복잡성을 피할 수 있다.
+* Xcode에는 PVRTC 이미지를 생성하기 위해 `texturetool`이라는 명령 줄 도구가 포함되어 있지만 액세스가 어렵다(Xcode 응용 프로그램 번들 내에 있음). 기능면에서는 제한적이다. 더 나은 옵션은 `Imagination Technologies PVRTexTool`을 사용하는 것이다.이 소프트웨어는 [이곳](http://www.imgtec.com/powervr/insider/sdkdownloads)에서 PowerVR SDK의 일부로 무료로 다운로드 할 수 있다.
+* `PVRTexTool`을 설치 한 후 터미널에서 다음 명령을 사용하여 적절한 크기의 PNG 이미지를 PVRTC 파일로 변환 할 수 있다.
+```
+/Applications/Imagination/PowerVR/GraphicsSDK/PVRTexTool/CL/OSX_x86/PVRTexToolCL -i {input_file_name}.png -o {output_file_name}.pvr -legacypvr -p -f PVRTC1_4 -q pvrtcbest
+```
+* 아래는 PVRTC 이미지를 로드하고 표시하는데 필요한 코드를 보여준다(6 장의 CAEAGLLayer 예제 코드에서 수정).
+
+![](Resource/14_6.png)
+
+```Swift
+import UIKit
+import QuartzCore
+import GLKit
+
+class ViewController_14_8: UIViewController {
+
+    @IBOutlet weak var glView: UIView!
+    var glContext: EAGLContext!
+    var glLayer: CAEAGLLayer!
+    var frameBuffer: UnsafeMutablePointer<GLuint>! = UnsafeMutablePointer<GLuint>.allocate(capacity: 1)
+    var colorRenderBuffer: UnsafeMutablePointer<GLuint>! = UnsafeMutablePointer<GLuint>.allocate(capacity: 1)
+    var framebufferWidth: UnsafeMutablePointer<GLint>! = UnsafeMutablePointer<GLint>.allocate(capacity: 1)
+    var framebufferHeight: UnsafeMutablePointer<GLint>! = UnsafeMutablePointer<GLint>.allocate(capacity: 1)
+    var effect: GLKBaseEffect!
+    var textureInfo: GLKTextureInfo!
+    
+    func setUpBuffers() {
+        glGenFramebuffers(1, &frameBuffer.pointee)
+        glBindFramebuffer(GLenum(GL_FRAMEBUFFER), frameBuffer.pointee)
+
+        glGenRenderbuffers(1, &colorRenderBuffer.pointee)
+        glBindRenderbuffer(GLenum(GL_RENDERBUFFER), colorRenderBuffer.pointee)
+        glFramebufferRenderbuffer(GLenum(GL_FRAMEBUFFER), GLenum(GL_COLOR_ATTACHMENT0), GLenum(GL_RENDERBUFFER), colorRenderBuffer.pointee)
+        
+        glContext.renderbufferStorage(Int(GL_RENDERBUFFER), from: glLayer)
+        
+        glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_WIDTH), &framebufferWidth.pointee)
+        glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_HEIGHT), &framebufferHeight.pointee)
+        
+        if glCheckFramebufferStatus(GLenum(GL_FRAMEBUFFER)) != GLenum(GL_FRAMEBUFFER_COMPLETE) {
+            print("Failed to make complete framebuffer object: \(glCheckFramebufferStatus(GLenum(GL_FRAMEBUFFER)))")
+        }
+    }
+    
+    func tearDownBuffers() {
+        if frameBuffer.pointee == 0 {
+            glDeleteFramebuffers(1, &frameBuffer.pointee)
+            frameBuffer.pointee = 0
+        }
+        
+        if colorRenderBuffer.pointee == 0 {
+            glDeleteFramebuffers(1, &colorRenderBuffer.pointee)
+            colorRenderBuffer.pointee = 0
+        }
+    }
+    
+    func drawFrame() {
+        glBindFramebuffer(GLenum(GL_FRAMEBUFFER), frameBuffer.pointee)
+        glViewport(0, 0, framebufferWidth.pointee, framebufferHeight.pointee)
+        
+        effect.prepareToDraw()
+        
+        glClear(GLbitfield(GL_COLOR_BUFFER_BIT))
+        glClearColor(0, 0, 0, 0)
+        
+        let vertices: [GLfloat] = [
+            -1.0, -1.0,
+            -1.0, 1.0,
+            1.0, 1.0,
+            1.0, -1.0,
+            ]
+        
+        let textCoords: [GLfloat] = [
+            0, 1,
+            0, 0,
+            1, 0,
+            1, 1,
+        ]
+        
+        glEnableVertexAttribArray(GLuint(GLKVertexAttrib.position.rawValue))
+        glEnableVertexAttribArray(GLuint(GLKVertexAttrib.texCoord0.rawValue))
+        glVertexAttribPointer(GLuint(GLKVertexAttrib.position.rawValue), 2, GLenum(GL_FLOAT), GLboolean(GL_FALSE), 0, vertices)
+        glVertexAttribPointer(GLuint(GLKVertexAttrib.texCoord0.rawValue), 2, GLenum(GL_FLOAT), GLboolean(GL_FALSE), 0, textCoords)
+        glDrawArrays(GLenum(GL_TRIANGLE_FAN), 0, 4)
+        
+        glBindRenderbuffer(GLenum(GL_RENDERBUFFER), colorRenderBuffer.pointee)
+        glContext.presentRenderbuffer(Int(GL_RENDERBUFFER))
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        glContext = EAGLContext(api: .openGLES2)
+        EAGLContext.setCurrent(glContext)
+        
+        glLayer = CAEAGLLayer(layer: glView.layer)
+        glLayer.frame = glView.bounds
+        glLayer.isOpaque = false
+        glView.layer.addSublayer(glLayer)
+        
+        glLayer.drawableProperties = [
+            kEAGLDrawablePropertyRetainedBacking: NSNumber(value: false),
+            kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8
+        ]
+        
+        glActiveTexture(GLenum(GL_TEXTURE0))
+        
+        let imageFile = Bundle.main.path(forResource: "Snowman", ofType: "pvr") ?? ""
+        textureInfo = try? GLKTextureLoader.texture(withContentsOfFile: imageFile, options: nil)
+        
+        let texture = GLKEffectPropertyTexture()
+        texture.enabled = GLboolean(GL_TRUE)
+        texture.envMode = .decal
+        texture.name = textureInfo.name
+        
+        effect = GLKBaseEffect()
+        effect.texture2d0.name = texture.name
+        
+        setUpBuffers()
+        drawFrame()
+    }
+    
+    deinit {
+        tearDownBuffers()
+        EAGLContext.setCurrent(nil)
+    }
+}
+```
+
+* 보시다시피, 그렇게하는 것은 어렵지 않지만 일반 응용 프로그램 (OpenGL 기반 게임과 반대되는)에서 PVRTC 이미지를 사용하는 데 관심이있는 경우 GLView 라이브러리 (https://github.com/nicklockwood/GLView)는 UIImageView의 대부분의 기능을 복제하는 간단한 GLImageView 클래스를 제공하지만 사용자가 OpenGL 코드를 작성하지 않아도 PVRTC 이미지를 표시 할 수 있다.
+
+## Summary
+* 이 장에서는 이미지로드 및 압축 해제와 관련된 성능 문제를 조사하고 다양한 해결 방법 및 솔루션을 살펴 보았습니다.
+* 15 장, "레이어 성능"에서는 레이어 렌더링 및 합성과 관련된 성능 문제에 대해 설명합니다.
